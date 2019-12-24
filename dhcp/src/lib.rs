@@ -125,20 +125,24 @@ fn read_options(data: &[u8]) -> Vec<DHCPOption> {
 
     loop {
         let option = match (data.get(idx), data.get(idx+1)) {
+            // Padding byte
             (Some(0x00), _) => {
                 idx += 1;
                 Some(DHCPOption(0x00, 0, vec![]))
             },
+            // Option byte
             (Some(code), Some(length)) => {
                 let length_us = *length as usize;
                 if idx+length_us+2 > data.len() {
                     None
                 } else {
-                    let option = DHCPOption(*code, *length, data[idx+2..idx+length_us+2].to_vec());
+                    let option = DHCPOption(*code, *length,
+                                            data[idx+2..idx+length_us+2].to_vec());
                     idx += length_us+2;
                     Some(option)
                 }
             },
+            // Propbably end of the data
             _ => None
         };
 
@@ -162,36 +166,77 @@ impl Default for DHCPDgram {
 
 impl Default for DHCPBody {
     fn default() -> Self {
-        let data = [0u8; mem::size_of::<DHCPBody>()];
-        let mut transmuted: DHCPBody = unsafe {
-            mem::transmute(data)
+        let bytes = [0u8; mem::size_of::<DHCPBody>()];
+        let mut body: DHCPBody = unsafe {
+            mem::transmute(bytes)
         };
-        transmuted.mcookie = 0x63825363;
-        transmuted
+        body.mcookie = 0x63825363;
+        body
     }
 }
 
 impl Clone for DHCPBody { fn clone(&self) -> Self { *self } }
 
-static MESSAGE_TYPE: Map<u8, &'static str> = phf_map! {
+static DHCP_OPERATION: Map<u8, &'static str> = phf_map! {
     0x01u8 => "BOOT REQUEST",
     0x02u8 => "BOOT REPLY"
+};
+
+static DHCP_MESSAGE_TYPE: Map<u8, &'static str> = phf_map! {
+    1u8 => "DISCOVER",
+    2u8 => "OFFER",
+    3u8 => "REQUEST",
+    4u8 => "DECLINE",
+    5u8 => "ACK",
+    6u8 => "NACK",
+    7u8 => "RELEASE",
+    8u8 => "INFORM"
+};
+
+static DHCP_OPTION_NAME: Map<u8, &'static str> = phf_map! {
+    1u8 => "Subnet Mask",
+    3u8 => "Router",
+    6u8 => "Domain Name Server",
+
+    15u8 => "Domain Name",
+
+    43u8 => "Vendor-Specific Information (PXEClient)",
+
+    53u8 => "DHCP Message Type",
+    54u8 => "DHCP Server Identifier",
+    55u8 => "Parameter Request List",
+    57u8 => "Maximum DHCP Message Size",
+    58u8 => "Renewal Time Value",
+    59u8 => "Rebinding Time Value",
+    60u8 => "Vendor class Identifier",
+
+    93u8 => "Client System Architecture",
+    94u8 => "Client Network Device Interface",
+    97u8 => "UUID/GUID-based Client Identifier",
+
+    255u8 => "END"
 };
 
 impl Display for DHCPDgram {
     fn fmt(&self, f: &mut Formatter) -> Result {
         writeln!(f, "{}", self.body);
         writeln!(f, "OPTIONS:");
-        self.options.iter().for_each(|option| {
+
+        for option in &self.options {
+            if option.0 == 0x00 {
+                break;
+            }
+            writeln!(f, "---");
             write!(f, "{}", option);
-        });
+        }
+
         Ok(())
     }
 }
 
 impl Display for DHCPBody {
     fn fmt(&self, f: &mut Formatter) -> Result {
-        writeln!(f, "TYPE: {}", MESSAGE_TYPE.get(&self.op).unwrap_or(&"NONE"));
+        writeln!(f, "TYPE: {}", DHCP_OPERATION.get(&self.op).unwrap_or(&"NONE"));
         writeln!(f, "Network type: 0x{:02x}", self.htype);
         writeln!(f, "XID: 0x{:x}", self.xid);
         writeln!(f, "Client: {} | Your: {}", ipv4_str(self.ciaddr), ipv4_str(self.yiaddr));
@@ -203,12 +248,20 @@ impl Display for DHCPBody {
 
 impl Display for DHCPOption {
     fn fmt(&self, f: &mut Formatter) -> Result {
-        // Ignore padding
-        if self.0 == 0x00 {
-            return Ok(());
+        let name = DHCP_OPTION_NAME
+            .get(&self.0)
+            .unwrap_or(&"Unknown");
+
+        writeln!(f, "OPTION {} - '{}', LENGTH: {}", self.0, name, self.1);
+        match self.0 {
+            53 => {
+                let msg_type_name = DHCP_MESSAGE_TYPE
+                    .get(&self.2[0])
+                    .unwrap_or(&"Unknown");
+                writeln!(f, "{}", msg_type_name)
+            },
+            _ => writeln!(f, "DATA: {:?}", self.2)
         }
-        writeln!(f, "OPTION {}, LENGTH: {}", self.0, self.1);
-        writeln!(f, "DATA: {:?}", self.2)
     }
 }
 
@@ -220,10 +273,6 @@ fn ipv4_str(octets: impl Borrow<[u8; 4]>) -> String {
 fn mac_str(octets: impl Borrow<[u8; 6]>) -> String {
     let octets = octets.borrow();
     format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            octets[0],
-            octets[1],
-            octets[2],
-            octets[3],
-            octets[4],
-            octets[5])
+            octets[0], octets[1], octets[2],
+            octets[3], octets[4], octets[5])
 }
