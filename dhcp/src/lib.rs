@@ -64,6 +64,7 @@ impl DHCPDgram {
 
         let dhcp: DHCPBody = unsafe { mem::transmute(dhcp_buff) };
         let options: Vec<DHCPOption> = read_options(rest);
+
         Some(Self {
             body: dhcp.clone(),
             options: options
@@ -117,7 +118,7 @@ impl DHCPBody {
     }
 }
 
-// Parse byte aray reserved for options.
+// Parse byte array with options.
 fn read_options(data: &[u8]) -> Vec<DHCPOption> {
     let mut idx = 0;
     let mut options = Vec::with_capacity(256);
@@ -130,7 +131,7 @@ fn read_options(data: &[u8]) -> Vec<DHCPOption> {
             },
             (Some(code), Some(length)) => {
                 let length_us = *length as usize;
-                if idx+length_us+2 >= data.len() {
+                if idx+length_us+2 > data.len() {
                     None
                 } else {
                     let option = DHCPOption(*code, *length, data[idx+2..idx+length_us+2].to_vec());
