@@ -1,30 +1,42 @@
 
 
-use dhcp::{DHCPDgram, DHCPDgramBuilder};
+use dhcp::{
+    DHCPDgram,
+    DHCPDgramBuilder,
+    DHCPBodyBuilder
+};
 use std::net::Ipv4Addr;
 
 fn main() {
-    let dhcp: DHCPDgram = DHCPDgramBuilder::default()
-        .op(0x02)
-        .htype(0x01)
-        .hlen(0x06)
-        .hops(0x00)
-        .xid(0x3903F326)
-        .ciaddr(Ipv4Addr::new(0, 0, 0, 0).octets())
-        .yiaddr(Ipv4Addr::new(192, 168, 1, 100).octets())
-        .siaddr(Ipv4Addr::new(1, 2, 3, 4).octets())
-        .giaddr(Ipv4Addr::new(0, 0, 0, 0).octets())
+    let dhcp1 = DHCPDgramBuilder::default()
+        .body(
+            DHCPBodyBuilder::default()
+                .op(0x02)
+                .htype(0x01)
+                .hlen(0x06)
+                .hops(0x00)
+                .xid(0x3903F326)
+                .ciaddr(Ipv4Addr::new(0, 0, 0, 0).octets())
+                .yiaddr(Ipv4Addr::new(192, 168, 1, 100).octets())
+                .siaddr(Ipv4Addr::new(1, 2, 3, 4).octets())
+                .giaddr(Ipv4Addr::new(0, 0, 0, 0).octets())
+        )
+        .option(53, &[1])
+        .end()
         .build()
         .unwrap();
 
-    println!("=== LE ===");
-    println!("{}", dhcp);
-    println!("=== BE ===");
-    println!("{}", dhcp.flip_endianess());
+    println!("{}", dhcp1);
+
+    DHCPDgram::from_bytes(&packet[..]).map(|dhcp| {
+        println!("=== BE ===");
+        println!("{}", dhcp);
+        println!("=== LE ===");
+        println!("{}", dhcp.swap_endianess());
+    });
 }
-/*
-    let packet = [
-        0x01u8, 0x01, 0x06, 0x00, 0x12, 0xcb,
+    static packet: [u8; 548] = [
+        0x01, 0x01, 0x06, 0x00, 0x12, 0xcb,
         0x41, 0x1b, 0x00, 0x04, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x25, 0x11, 0xcb, 0x41, 0x1b, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -61,5 +73,5 @@ fn main() {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     ];
 
-    let dhcp = unsafe { ((&packet as *const u8) as *const DHCPDgram).as_ref().unwrap() };
-*/
+
+
