@@ -1,10 +1,12 @@
 use dhcp::{DHCPDgram, DHCPDgramBuilder};
 use pxe::{PXEBuilder};
 
-use std::net::{SocketAddr, SocketAddrV4, UdpSocket, Ipv4Addr};
+use std::{env, io};
 use std::io::ErrorKind;
-
-const ADDR: &'static str = "192.168.1.103:67";
+use std::net::{SocketAddr,
+               SocketAddrV4,
+               UdpSocket,
+               Ipv4Addr};
 
 // Operations
 const BOOT_REQUEST: u8 = 1;
@@ -24,49 +26,71 @@ const CLASS_ID: u8 = 60;
 const CLIENT_MAC: u8 = 97;
 
 fn main() -> std::io::Result<()> {
-    let socket = UdpSocket::bind(ADDR)?;
-    socket.set_broadcast(true).expect("set_broadcast call failed");
+    // Broadcast, UDP 68. For server responses.
+    let broadcast = SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), 68);
 
-    println!("Listening on {}...", ADDR);
+    // Get server address
+    let argv = env::args().collect::<Vec<String>>();
+    let addr = argv.get(1)
+        .and_then(|addr| addr.parse::<SocketAddrV4>().ok())
+        .ok_or({
+            let msg = format!("You must specify address and port to listen on. Example: {} x.x.x.x:pp",
+                              argv.get(0).unwrap());
+            io::Error::new(ErrorKind::InvalidInput, msg)
+        })?;
 
-    let BROADCAST = SocketAddrV4::new(
-        Ipv4Addr::new(255, 255, 255, 255), 68
-    );
+    // Setup socket
+    let socket = UdpSocket::bind(&addr)?;
+    socket.set_broadcast(true)?;
+    println!("Listening on {}...", addr);
 
+    // Main server loop
     loop {
         let (dhcp, from) = listen(&socket);
+
+        // Convert for BE to LE
         let dhcp = dhcp.swap_endianess();
         let body = dhcp.body;
 
-        if body.op != BOOT_REQUEST {
+        // Server ignores replies.
+        if body.op == BOOT_REPLY {
             continue;
         }
 
+        // Try to create response for request.
         let res = match dhcp.option(MESSAGE_TYPE) {
             Some(&[DISCOVER]) => {
-                println!("DISCOVER FROM: {}", from);
-                discover(dhcp)
+                println!("DHCP_DISCOVER FROM: {}", from);
+                discover(&addr, dhcp)
             },
             Some(&[REQUEST]) => {
-                println!("REQUEST FROM: {}", from);
+                println!("DHCP_REQUEST FROM: {}", from);
                 None
             },
-            _ => None
+            _ => {
+                println!("UNKNOWN FROM: {}", from);
+                None
+            }
         };
 
-        res.map(|res| {
-            println!("RESPONDED");
-            println!("{}", res);
+        // If managed to create response, try to broadcast it.
+        match res {
+            Some(res) => {
+                let res = res.swap_endianess();
+                let bytes = res.as_bytes();
 
-            let res = res.swap_endianess();
-            socket.send_to(&res.as_bytes()[..], &BROADCAST);
-        });
+                // check
+                let _ = socket.send_to(bytes.as_slice(), &broadcast);
+                println!("Response sent");
+            },
+            _ => {
+                println!("Unable to create responce.");
+            }
+        }
     }
 }
 
-fn discover(dhcp: DHCPDgram) -> Option<DHCPDgram> {
-    println!("{}", dhcp);
-
+fn discover(addr: &SocketAddrV4, dhcp: DHCPDgram) -> Option<DHCPDgram> {
     let copy_string = |string: &str, target: &mut [u8]| {
         let zipped = target.into_iter().zip(string.as_bytes().iter());
         for (place, data) in zipped {
@@ -75,28 +99,20 @@ fn discover(dhcp: DHCPDgram) -> Option<DHCPDgram> {
     };
 
     let mut body = dhcp.body;
-
     body.op = BOOT_REPLY;
     copy_string("PXEServer", &mut body.sname);
     copy_string("memtest_x86.0", &mut body.filename);
 
     let pxe = PXEBuilder::default()
-        .start()
-        .boot_servers(vec![ Ipv4Addr::new(192, 168, 1, 103) ])
+        .start(false)
+        .boot_servers(vec![addr.ip()])
         .end()
         .build();
-
-    let maybe_client_id = dhcp.option(CLIENT_MAC);
-    if maybe_client_id.is_none() {
-        return None;
-    }
-    let client_id = maybe_client_id.unwrap();
 
     DHCPDgramBuilder::default()
         .body(body)
         .option(MESSAGE_TYPE, &[OFFER])
-        .option(SERVER_ID, &[192, 168, 1, 103])
-        .option(CLIENT_MAC, client_id)
+        .option(SERVER_ID, &addr.ip().octets())
         .option(CLASS_ID, "PXEClient".as_bytes())
         .option(VENDOR_OPTIONS, &pxe[..])
         .end()
@@ -114,12 +130,12 @@ fn listen(socket: &UdpSocket) -> (DHCPDgram, SocketAddrV4) {
                 if let SocketAddr::V4(ipv4) = from {
                     Ok((amt, ipv4))
                 } else {
-                    Err(std::io::Error::new(ErrorKind::AddrNotAvailable, "IPv4 only."))
+                    Err(io::Error::new(ErrorKind::AddrNotAvailable, "IPv4 only."))
                 }
             })
             // Convert bytes to DHCP datagram
             .and_then(|(amt, ipv4)| {
-                let err = std::io::Error::new(
+                let err = io::Error::new(
                     ErrorKind::InvalidData,
                     "Unable to interpret as DHCP datagram."
                 );
