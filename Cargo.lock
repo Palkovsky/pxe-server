@@ -171,10 +171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pxe"
+version = "0.1.0"
+
+[[package]]
 name = "pxe-server"
 version = "0.1.0"
 dependencies = [
  "dhcp 0.1.0",
+ "pxe 0.1.0",
 ]
 
 [[package]]

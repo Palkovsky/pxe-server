@@ -10,31 +10,32 @@ use std::default::Default;
 use std::fmt::{Display, Formatter, Result};
 use std::net::Ipv4Addr;
 use std::borrow::Borrow;
-use phf::{ Map, phf_map };
+
+use phf::{Map, phf_map};
 
 #[repr(packed)]
 #[derive(Builder, Copy)]
 #[builder(default)]
 pub struct DHCPBody {
-    op: u8,
-    htype: u8,
-    hlen: u8,
-    hops: u8,
-    xid: u32,
-    secs: u16,
-    flags: u16,
-    ciaddr: [u8; 4],
-    yiaddr: [u8; 4],
-    siaddr: [u8; 4],
-    giaddr: [u8; 4],
-    chaddr: [u8; 16],
-    sname: [u8; 64],
-    filename: [u8; 128],
-    mcookie: u32
+    pub op: u8,
+    pub htype: u8,
+    pub hlen: u8,
+    pub hops: u8,
+    pub xid: u32,
+    pub secs: u16,
+    pub flags: u16,
+    pub ciaddr: [u8; 4],
+    pub yiaddr: [u8; 4],
+    pub siaddr: [u8; 4],
+    pub giaddr: [u8; 4],
+    pub chaddr: [u8; 16],
+    pub sname: [u8; 64],
+    pub filename: [u8; 128],
+    pub mcookie: u32
 }
 
 #[derive(Clone)]
-pub struct DHCPOption(u8, u8, Vec<u8>);
+pub struct DHCPOption(pub u8, pub u8, pub Vec<u8>);
 
 #[derive(Clone)]
 pub struct DHCPDgram {
@@ -70,21 +71,44 @@ impl DHCPDgram {
             options: options
         })
     }
+
+    pub fn as_bytes(self) -> Vec<u8> {
+        let mut body_buff = [0u8; mem::size_of::<DHCPBody>()];
+        body_buff = unsafe { mem::transmute(self.body) };
+
+        let options_buff = self.options.into_iter()
+            .fold(Vec::<u8>::new(), |mut acc, x| {
+                let mut v = x.2.to_vec();
+                v.insert(0, x.1);
+                v.insert(0, x.0);
+                acc.extend(&v);
+                acc
+            });
+
+        vec![body_buff.to_vec(), options_buff].concat()
+    }
+
+    pub fn option(&self, id: u8) -> Option<&[u8]> {
+        self.options.iter()
+            .filter(|option| option.0 == id)
+            .map(|option| &option.2[..])
+            .next()
+    }
 }
 
 #[derive(Default)]
-pub struct DHCPDgramBuilder<'a> {
-    dhcp: Option<&'a mut DHCPBodyBuilder>,
+pub struct DHCPDgramBuilder {
+    dhcp: Option<DHCPBody>,
     options: Vec<DHCPOption>
 }
 
-impl<'a> DHCPDgramBuilder<'a> {
+impl DHCPDgramBuilder {
     pub fn option(mut self, code: u8, data: &[u8]) -> Self {
         self.options.push(DHCPOption(code, data.len() as u8, data.to_vec()));
         self
     }
 
-    pub fn body(mut self, dhcp: &'a mut DHCPBodyBuilder) -> Self {
+    pub fn body(mut self, dhcp: DHCPBody) -> Self {
         self.dhcp = Some(dhcp);
         self
     }
@@ -95,13 +119,11 @@ impl<'a> DHCPDgramBuilder<'a> {
 
     pub fn build(self) -> Option<DHCPDgram> {
         let options = self.options;
-        self.dhcp.and_then(|body_builder| {
-            body_builder.build().ok().map(|dhcp| {
-                DHCPDgram {
-                    body: dhcp,
-                    options: options
-                }
-            })
+        self.dhcp.map(|body| {
+            DHCPDgram {
+                body: body,
+                options: options
+            }
         })
     }
 }
@@ -202,6 +224,8 @@ static DHCP_OPTION_NAME: Map<u8, &'static str> = phf_map! {
 
     43u8 => "Vendor-Specific Information (PXEClient)",
 
+    51u8 => "IP Address Lease Time",
+    52u8 => "Overload 'sname' or 'file'",
     53u8 => "DHCP Message Type",
     54u8 => "DHCP Server Identifier",
     55u8 => "Parameter Request List",
@@ -209,6 +233,7 @@ static DHCP_OPTION_NAME: Map<u8, &'static str> = phf_map! {
     58u8 => "Renewal Time Value",
     59u8 => "Rebinding Time Value",
     60u8 => "Vendor class Identifier",
+    61u8 => "Client Identifier",
 
     93u8 => "Client System Architecture",
     94u8 => "Client Network Device Interface",
@@ -242,6 +267,8 @@ impl Display for DHCPBody {
         writeln!(f, "Client: {} | Your: {}", ipv4_str(self.ciaddr), ipv4_str(self.yiaddr));
         writeln!(f, "Server: {} | Gateway: {}", ipv4_str(self.siaddr), ipv4_str(self.giaddr));
         writeln!(f, "Client MAC: {}", mac_str(array_ref![self.chaddr, 0, 6]));
+        writeln!(f, "Server Name: {}", std::str::from_utf8(&self.sname[..]).unwrap_or(""));
+        writeln!(f, "Bootfile: {}", std::str::from_utf8(&self.filename[..]).unwrap_or(""));
         write!(f, "COOKIE: 0x{:08x}", self.mcookie)
     }
 }

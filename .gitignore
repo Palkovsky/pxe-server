@@ -3,3 +3,6 @@
 
 dhcp/target
 dhcp/**/*.rs.bk
+
+pxe/target
+pxe/**/*.rs.bk
