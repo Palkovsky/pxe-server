@@ -101,7 +101,7 @@ fn discover(addr: &SocketAddrV4, dhcp: DHCPDgram) -> Option<DHCPDgram> {
     let mut body = dhcp.body;
     body.op = BOOT_REPLY;
     copy_string("PXEServer", &mut body.sname);
-    copy_string("memtest_x86.0", &mut body.filename);
+    copy_string("pxelinux.0", &mut body.filename);
 
     let pxe = PXEBuilder::default()
         .start(false)

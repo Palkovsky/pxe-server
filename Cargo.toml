@@ -11,3 +11,6 @@ path = "./dhcp"
 
 [dependencies.pxe]
 path = "./pxe"
+
+[dependencies.tftp]
+path = "./tftp"

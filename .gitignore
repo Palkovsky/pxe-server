@@ -6,3 +6,6 @@ dhcp/**/*.rs.bk
 
 pxe/target
 pxe/**/*.rs.bk
+
+tftp/target
+tftp/**/*.rs.bk

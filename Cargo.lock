@@ -180,6 +180,7 @@ version = "0.1.0"
 dependencies = [
  "dhcp 0.1.0",
  "pxe 0.1.0",
+ "tftp 0.1.0",
 ]
 
 [[package]]
@@ -255,6 +256,10 @@ dependencies = [
  "quote 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "unicode-xid 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "tftp"
+version = "0.1.0"
 
 [[package]]
 name = "unicode-xid"
