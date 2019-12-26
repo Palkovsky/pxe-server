@@ -22,18 +22,22 @@ impl TFTPTransfer {
             return None;
         }
 
-        // Read new block from file.
         let mut buff = vec![0; self.block_sz as usize];
-        let read = self.file.read(&mut buff);
-        if read.is_err() {
-            return None;
-        }
-
-        let read = read.unwrap();
+        let bytes_read = self.file.read(&mut buff)
+            .unwrap_or(0);
 
         self.block_cnt += 1;
-        self.done = read as u16 != self.block_sz;
-        Some(buff.to_vec())
+        self.done = bytes_read as u16 != self.block_sz;
+
+        // Ciebie trzeba skrócić troszeczkę
+        let buff_trim = &buff[..bytes_read];
+        Some(buff_trim.to_vec())
+    }
+
+    fn tsize(&self) -> usize {
+        self.file.metadata()
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0)
     }
 }
 
@@ -79,10 +83,11 @@ impl TFTPServer {
                     block_cnt: 0,
                     block_sz: 1456,
                     done: false,
-                    file: File::open("R:\\memtest_x86.0").unwrap()
+                    file: File::open("R:\\tftpboot\\pxelinux.0").unwrap()
                 };
+                let ack = TFTP::opt_ack(Some(transfer.block_sz), Some(transfer.tsize()));
                 self.transfers.insert(from.clone(), transfer);
-                Ok(TFTP::opt_ack(0))
+                Ok(ack)
             },
             Some(&TFTP::ACK) =>
                 self.send_next(&from),
@@ -109,18 +114,10 @@ impl TFTP {
 
     // Into<String> should probably be replaced with CStr or IntoCStr trait.
     pub fn wrq(filname: impl Into<String>, mode: impl Into<String>) -> Vec<u8> {
-        let filname = filname.into();
-        let mode = mode.into();
-
-        let mut filname_bytes = vec![];
-        filname_bytes.extend_from_slice(filname.as_bytes());
-        filname_bytes.push(0x00);
-
-        let mut mode_bytes = vec![];
-        mode_bytes.extend_from_slice(mode.as_bytes());
-        mode_bytes.push(0x00);
-
-        vec![vec![Self::WRQ, 0x02], filname_bytes, mode_bytes].concat()
+        vec![vec![Self::WRQ, 0x02],
+             str_to_bytes(filname.into()),
+             str_to_bytes(mode.into())
+        ].concat()
     }
 
     pub fn rrq(filname: impl Into<String>, mode: impl Into<String>) -> Vec<u8> {
@@ -132,34 +129,40 @@ impl TFTP {
     pub fn data(block: u16, bytes: Vec<u8>) -> Vec<u8> {
         let lo = (block & 0xFF) as u8;
         let hi = (block >> 8) as u8;
+
         vec![vec![0x00, Self::DATA, hi, lo], bytes].concat()
     }
 
     pub fn ack(block: u16) -> Vec<u8> {
         let lo = (block & 0xFF) as u8;
         let hi = (block >> 8) as u8;
+
         vec![0x00, Self::ACK, hi, lo]
     }
 
-    pub fn opt_ack(block: u16) -> Vec<u8> {
-        let lo = (block & 0xFF) as u8;
-        let hi = (block >> 8) as u8;
-        let blk_size = vec![0x62, 0x6c, 0x6b, 0x73, 0x69, 0x7a, 0x65, 0x00, 0x31, 0x34, 0x35, 0x36, 0x00];
-        vec![vec![0x00, Self::OPT_ACK], blk_size].concat()
+    pub fn opt_ack(blksize: Option<u16>, tsize: Option<usize>) -> Vec<u8> {
+        let option_to_bytes = |name: &str, option: Option<String>| {
+            option
+                .map(|num| vec![str_to_bytes(name), str_to_bytes(num)].concat())
+                .unwrap_or(Vec::new())
+        };
+
+        let blksize = option_to_bytes("blksize", blksize.map(|sz| sz.to_string()));
+        let tsize = option_to_bytes("tsize", tsize.map(|sz| sz.to_string()));
+
+        vec![vec![0x00, Self::OPT_ACK], blksize, tsize].concat()
     }
 
     pub fn error(code: u16, msg: impl Into<String>) -> Vec<u8> {
-        let msg = msg.into();
-
-        let mut msg_bytes = vec![];
-        msg_bytes.extend_from_slice(msg.as_bytes());
-        msg_bytes.push(0x00);
-
         let lo = (code & 0xFF) as u8;
         let hi = (code >> 8) as u8;
 
-        vec![vec![0x00, Self::ERROR, hi, lo], msg_bytes].concat()
+        vec![vec![0x00, Self::ERROR, hi, lo], str_to_bytes(msg.into())].concat()
     }
+}
+
+fn str_to_bytes(string: impl Into<String>) -> Vec<u8> {
+    vec![string.into().as_bytes(), &[0x00][..]].concat()
 }
 
 #[test]
