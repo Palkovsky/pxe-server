@@ -1,7 +1,14 @@
 use std::io;
 use std::io::Read;
 
+use std::fs;
 use std::fs::File;
+use std::path::{
+    PathBuf
+};
+
+use std::num::Wrapping;
+
 use std::net::{
     UdpSocket,
     SocketAddr,
@@ -16,7 +23,37 @@ struct TFTPTransfer {
     file: File
 }
 
+/*
+ * TODO:
+ * - Security features.
+ * - Better logging.
+ * - Mult-threading
+ * - Better error handling.
+ */
+
+const ROOT_DIR: &'static str = "R:\\tftpboot";
+
 impl TFTPTransfer {
+    fn new(block_sz: u16, path_str: impl Into<String>) -> io::Result<Self> {
+
+        let path_str = path_str.into();
+        let path = PathBuf::from(&path_str);
+
+        let mut base = PathBuf::from(ROOT_DIR);
+        println!("PATH: {:?}", path);
+        base.push(PathBuf::from(path));
+
+        println!("FILPATH: {:?}", base);
+
+        let fil = File::open(base)?;
+        Ok(TFTPTransfer {
+            block_cnt: 0,
+            done: false,
+            block_sz: block_sz,
+            file: fil
+        })
+    }
+
     fn next_block(&mut self) -> Option<Vec<u8>> {
         if self.done {
             return None;
@@ -26,7 +63,7 @@ impl TFTPTransfer {
         let bytes_read = self.file.read(&mut buff)
             .unwrap_or(0);
 
-        self.block_cnt += 1;
+        self.block_cnt = (Wrapping(self.block_cnt) + Wrapping(1)).0;
         self.done = bytes_read as u16 != self.block_sz;
 
         // Ciebie trzeba skrócić troszeczkę
@@ -59,18 +96,6 @@ impl TFTPServer {
         }
     }
 
-    fn send_next(&mut self, to: &SocketAddr) -> io::Result<Vec<u8>> {
-        let is_done = self.transfers.get_mut(&to).map(|t| t.done).unwrap_or(false);
-        if is_done {
-            self.transfers.remove(to);
-            return Err(io::Error::new(io::ErrorKind::ConnectionRefused, "Transfer finished."));
-        }
-
-        self.transfers.get_mut(&to)
-            .and_then(|transfer| transfer.next_block().map(|blk| (transfer, blk)))
-            .map(|(transfer, bytes)| TFTP::data(transfer.block_cnt, bytes))
-            .ok_or(io::Error::new(io::ErrorKind::InvalidData, "Unable to send next block."))
-    }
 
     fn listen(&mut self, socket: &UdpSocket) -> io::Result<()> {
         let mut buf = [0; 4096];
@@ -78,27 +103,49 @@ impl TFTPServer {
 
         let buf = &mut buf[..amt];
         let res = match buf.get(1) {
+            // Read Request
             Some(&TFTP::RRQ) => {
-                let transfer = TFTPTransfer {
-                    block_cnt: 0,
-                    block_sz: 1456,
-                    done: false,
-                    file: File::open("R:\\tftpboot\\pxelinux.0").unwrap()
-                };
-                let ack = TFTP::opt_ack(Some(transfer.block_sz), Some(transfer.tsize()));
-                self.transfers.insert(from.clone(), transfer);
-                Ok(ack)
+                // Parse request here
+                let res = TFTP::parse_rrq(&buf)
+                    .map_err(|err| {println!("{}", err); err})
+                    .map(|transfer| {
+                        let ack = TFTP::opt_ack(Some(transfer.block_sz), Some(transfer.tsize()));
+                        self.transfers.insert(from.clone(), transfer);
+                        ack
+                    })
+                    .unwrap_or(TFTP::error(1, "No such file."));
+                Ok(res)
             },
+
+            // Transfers next or returns error if transfer impossible.
             Some(&TFTP::ACK) =>
                 self.send_next(&from),
+
+            // Send error if something other than ACK or RRQ.
             Some(_) =>
-                Err(io::Error::new(io::ErrorKind::InvalidData, "Unsuported operation.")),
+                Ok(TFTP::error(20, "Unsuported operation.")),
+
             _ =>
-                Err(io::Error::new(io::ErrorKind::InvalidData, "Not enought data."))
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Not enough data."))
         }?;
 
         socket.send_to(res.as_slice(), &from)?;
         Ok(())
+    }
+
+    fn send_next(&mut self, to: &SocketAddr) -> io::Result<Vec<u8>> {
+        let is_done = self.transfers.get_mut(&to).map(|t| t.done).unwrap_or(false);
+        if is_done {
+            self.transfers.remove(to);
+            return Err(io::Error::new(io::ErrorKind::ConnectionRefused, "Transfer finished."));
+        }
+
+        Ok(
+            self.transfers.get_mut(&to)
+                .and_then(|transfer| transfer.next_block().map(|blk| (transfer, blk)))
+                .map(|(transfer, bytes)| TFTP::data(transfer.block_cnt, bytes))
+                .unwrap_or(TFTP::error(2, "Unable to read next block."))
+        )
     }
 }
 
@@ -158,6 +205,49 @@ impl TFTP {
         let hi = (code >> 8) as u8;
 
         vec![vec![0x00, Self::ERROR, hi, lo], str_to_bytes(msg.into())].concat()
+    }
+
+    pub fn parse_rrq(bytes: &[u8]) -> io::Result<TFTPTransfer> {
+        let opcode = bytes.get(0)
+            .and_then(|b1| bytes.get(1).map(|b2| (b1.clone(), b2.clone())))
+            .unwrap_or((0, 0));
+
+        if opcode != (0, Self::RRQ) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid opcode."));
+        }
+
+        let rest = &bytes[2..].to_vec();
+        let chunks = rest
+            .split(|b| *b == 0x00)
+            .collect::<Vec<&[u8]>>();
+        let mut windows = chunks
+            .windows(2);
+
+        if let Some(&[filname, _mode]) = windows.next() {
+            let filname_str = std::str::from_utf8(filname)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Unable to parse filename string."))?;
+            let _mode_str = std::str::from_utf8(filname)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Unable to parse mode string."))?;
+
+            let options = windows.fold(HashMap::<String, String>::new(), |mut acc, window| {
+                let key   = window.get(0).and_then(|option_name| std::str::from_utf8(option_name).ok());
+                let value = window.get(1).and_then(|option_value| std::str::from_utf8(option_value).ok());
+
+                if let (Some(key), Some(value)) = (key, value) {
+                    acc.insert(key.to_string(), value.to_string());
+                }
+
+                acc
+            });
+
+            let blksize = options.get("blksize")
+                .and_then(|string| string.parse::<u16>().ok())
+                .unwrap_or(1488);
+
+            return TFTPTransfer::new(blksize, filname_str);
+        }
+
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Missing filename or mode."));
     }
 }
 
